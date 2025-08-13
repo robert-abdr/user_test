@@ -29,6 +29,17 @@ public class ErrorHandler {
                 LocalDateTime.now().format(formatter));
     }
 
+    @ExceptionHandler(IllegalAccessException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponseDto handleIllegalArgument(Exception e) {
+        log.error("Illegal argument", e);
+        return new ErrorResponseDto(
+                HttpStatus.BAD_REQUEST.name(),
+                "Illegal arguments",
+                e.getMessage(),
+                LocalDateTime.now().format(formatter));
+    }
+
     @ExceptionHandler({
         MethodArgumentNotValidException.class,
         FileSizeLimitExceededException.class,

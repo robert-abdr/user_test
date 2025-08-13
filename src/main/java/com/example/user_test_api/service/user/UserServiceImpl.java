@@ -3,7 +3,6 @@ package com.example.user_test_api.service.user;
 import com.example.user_test_api.dto.UserDtoToCreate;
 import com.example.user_test_api.dto.UserOutputDto;
 import com.example.user_test_api.dto.UserUpdateDto;
-import com.example.user_test_api.exception.UserExistException;
 import com.example.user_test_api.mapper.UserMapper;
 import com.example.user_test_api.model.Role;
 import com.example.user_test_api.model.User;
@@ -11,6 +10,7 @@ import com.example.user_test_api.model.UserRole;
 import com.example.user_test_api.repository.RoleRepository;
 import com.example.user_test_api.repository.UserRepository;
 import com.example.user_test_api.service.UserService;
+import com.example.user_test_api.util.UserServiceValidator;
 import jakarta.persistence.EntityNotFoundException;
 import java.util.ArrayList;
 import java.util.UUID;
@@ -21,6 +21,7 @@ import org.springframework.cache.annotation.CachePut;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 @Slf4j
 @Service
@@ -30,68 +31,37 @@ public class UserServiceImpl implements UserService {
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
     private final UserMapper userMapper;
+    private final UserServiceValidator userServiceValidator;
 
     @Override
+    @Transactional
     @CachePut(value = "users", key = "#result.uuid")
     public UserOutputDto createNewUser(UserDtoToCreate userDto) {
+        userServiceValidator.validateUserDto(userDto);
+
         String name = userDto.getFullName();
         String phoneNumber = userDto.getPhoneNumber();
 
-        if (userRepository.findByFullNameAndPhoneNumber(name, phoneNumber).isPresent()) {
-            String errorMessage = "User with name: %s and phone number %s already exist".formatted(name, phoneNumber);
-            log.error(errorMessage);
-            throw new UserExistException(errorMessage);
-        }
+        userServiceValidator.checkUserExists(name, phoneNumber, userRepository);
 
         log.info("Starting create new user with: name: {} and number: {}", name, phoneNumber);
 
-        UserRole role = userDto.getRole();
-        String avatarUrl = userDto.getAvatarUrl();
+        UserRole userRole = getUserRoleOrDefault(userDto.getRole());
+        String avatarUrl = getAvatarUrlOrDefault(userDto.getAvatarUrl(), name);
+        Role roleEntity = findOrCreateRole(userRole);
+        User user = buildUser(name, phoneNumber, avatarUrl, roleEntity);
+        User savedUser = userRepository.save(user);
+        log.info("Successfully created user with UUID: {}", savedUser.getUuid());
 
-        if (role == null) {
-            role = UserRole.MEMBER;
-            log.info("The user with name: {} and number: {} has a default role set: {}", name, phoneNumber, role);
-        }
-
-        if (avatarUrl == null) {
-            avatarUrl = (DEFAULT_AVATAR_URL_PREFIX + name);
-            log.info(
-                    "The user with name: {} and number: {} has a default avatar set: {}", name, phoneNumber, avatarUrl);
-        }
-
-        Role roleEntity = roleRepository.findByRole(role).orElse(null);
-        if (roleEntity == null) {
-            roleEntity = new Role();
-            roleEntity.setRole(role);
-            roleEntity.setUsers(new ArrayList<>());
-            roleRepository.save(roleEntity);
-            log.info("New role: {} was added in database", role);
-        }
-
-        User user = User.builder()
-                .fullName(name)
-                .phoneNumber(phoneNumber)
-                .avatarUrl(avatarUrl)
-                .role(roleEntity)
-                .build();
-
-        if (roleEntity.getUsers() == null) {
-            log.info("Empty userlist for role: {}, add new userlist", roleEntity);
-            roleEntity.setUsers(new ArrayList<>());
-        }
-        roleEntity.getUsers().add(user);
-        roleRepository.save(roleEntity);
-
-        return userMapper.toOutputDto(userRepository.save(user));
+        return userMapper.toOutputDto(savedUser);
     }
 
     @Override
     @Cacheable(value = "users", key = "#uuid")
     public UserOutputDto getUser(UUID uuid) {
-        log.info("Starting search user with uuid: {}", uuid);
-        User user = userRepository
-                .findByUuid(uuid)
-                .orElseThrow(() -> new EntityNotFoundException("User with uuid: %s doesn't exist".formatted(uuid)));
+        userServiceValidator.validateUuid(uuid);
+        log.info("Searching for user with UUID: {}", uuid);
+        User user = findUserByUuid(uuid);
 
         return userMapper.toOutputDto(user);
     }
@@ -100,51 +70,110 @@ public class UserServiceImpl implements UserService {
     @Transactional
     @CachePut(value = "users", key = "#result.uuid")
     public UserOutputDto updateUser(UserUpdateDto userDto) {
-        User user = userRepository
-                .findByUuid(userDto.getUuid())
-                .orElseThrow(() ->
-                        new EntityNotFoundException("User with uuid: %s doesn't found".formatted(userDto.getUuid())));
-        log.info("Starting update user with uuid: {}", userDto.getUuid());
-        UserRole userRole = userDto.getRole();
-        if (userRole != null) {
-            Role role = roleRepository.findByRole(userRole).orElse(null);
-            if (role == null) {
-                role = new Role();
-                role.setRole(userRole);
-                role.setUsers(new ArrayList<>());
-                roleRepository.save(role);
-            }
-            user.setRole(role);
-        }
+        userServiceValidator.validateUpdateDto(userDto);
 
-        if (userDto.getFullName() == null) {
-            userDto.setFullName(user.getFullName());
-        }
-        if (userDto.getPhoneNumber() == null) {
-            userDto.setPhoneNumber(user.getPhoneNumber());
-        }
-        if (userDto.getAvatarUrl() == null) {
-            userDto.setAvatarUrl(user.getAvatarUrl());
-        }
+        User user = findUserByUuid(userDto.getUuid());
+        log.info("Starting update user with uuid: {}", userDto.getUuid());
+        updateUserRole(user, userDto.getRole());
 
         userMapper.updateUserFromDto(userDto, user);
-        userRepository.save(user);
-        return userMapper.toOutputDto(user);
+
+        User savedUser = userRepository.save(user);
+        log.info("Successfully updated user with UUID: {}", savedUser.getUuid());
+
+        return userMapper.toOutputDto(savedUser);
     }
 
     @Override
     @Transactional
     @CacheEvict(value = "users", key = "#uuid")
     public void deleteUser(UUID uuid) {
-        User user = userRepository
-                .findByUuid(uuid)
-                .orElseThrow(() -> new EntityNotFoundException("User with uuid: %s was not found".formatted(uuid)));
+        userServiceValidator.validateUuid(uuid);
+
+        User user = findUserByUuid(uuid);
         log.info("Starting delete user with uuid: {}", uuid);
 
-        Role role = user.getRole();
-        if (role.getUsers() != null) {
-            role.getUsers().remove(user);
-        }
+        removeUserFromRole(user);
+
         userRepository.delete(user);
+        log.info("Successfully deleted user with UUID: {}", uuid);
+    }
+
+    private UserRole getUserRoleOrDefault(UserRole role) {
+        if (role == null) {
+            log.debug("No role specified, using default role: {}", UserRole.MEMBER);
+            return UserRole.MEMBER;
+        }
+        return role;
+    }
+
+    private String getAvatarUrlOrDefault(String avatarUrl, String name) {
+        if (!StringUtils.hasText(avatarUrl)) {
+            String defaultUrl = DEFAULT_AVATAR_URL_PREFIX + name;
+            log.debug("No avatar URL specified, using default: {}", defaultUrl);
+            return defaultUrl;
+        }
+        return avatarUrl;
+    }
+
+    private Role findOrCreateRole(UserRole userRole) {
+        return roleRepository.findByRole(userRole).orElseGet(() -> createNewRole(userRole));
+    }
+
+    private Role createNewRole(UserRole userRole) {
+        log.info("Creating new role: {}", userRole);
+        Role role = new Role();
+        role.setRole(userRole);
+        role.setUsers(new ArrayList<>());
+        return roleRepository.save(role);
+    }
+
+    private User findUserByUuid(UUID uuid) {
+        return userRepository
+                .findByUuid(uuid)
+                .orElseThrow(() -> new EntityNotFoundException("User with UUID: %s not found".formatted(uuid)));
+    }
+
+    private User buildUser(String name, String phoneNumber, String avatarUrl, Role roleEntity) {
+        User user = User.builder()
+                .fullName(name)
+                .phoneNumber(phoneNumber)
+                .avatarUrl(avatarUrl)
+                .role(roleEntity)
+                .build();
+        if (roleEntity.getUsers() == null) {
+            roleEntity.setUsers(new ArrayList<>());
+        }
+        roleEntity.getUsers().add(user);
+
+        return user;
+    }
+
+    private void updateUserRole(User user, UserRole newRole) {
+        if (newRole != null && !newRole.equals(user.getRole().getRole())) {
+            Role oldRole = user.getRole();
+            Role newRoleEntity = findOrCreateRole(newRole);
+
+            if (oldRole.getUsers() != null) {
+                oldRole.getUsers().remove(user);
+            }
+            if (newRoleEntity.getUsers() == null) {
+                newRoleEntity.setUsers(new ArrayList<>());
+            }
+            newRoleEntity.getUsers().add(user);
+
+            user.setRole(newRoleEntity);
+            log.debug("Updated user role from {} to: {}", oldRole.getRole(), newRole);
+        }
+    }
+
+    private void removeUserFromRole(User user) {
+        Role role = user.getRole();
+
+        if (role != null && role.getUsers() != null) {
+            role.getUsers().remove(user);
+
+            log.debug("Removed user from role: {}", role.getRole());
+        }
     }
 }

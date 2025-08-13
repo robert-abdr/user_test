@@ -1,0 +1,7 @@
+services:
+    master_postgres:
+        image: postgres:13.3
+        environment:
+            - POSTGRES_USER=user
+            - POSTGRES_PASSWORD=password
+            - POSTGRES_DB=postgres

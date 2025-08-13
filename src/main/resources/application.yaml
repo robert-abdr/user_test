@@ -1,0 +1,36 @@
+spring:
+    cache:
+        cache-names: users
+        type: caffeine
+        caffeine:
+            spec: maximumSize=500,expireAfterWrite=120s
+
+    session:
+        timeout: 30m
+        jdbc:
+            initialize-schema: always
+            table-name: SPRING_SESSION
+            schema: classpath:org/springframework/session/jdbc/schema-postgresql.sql
+    datasource:
+        driver-class-name: org.postgresql.Driver
+        url: jdbc:postgresql://localhost:5432/postgres
+        username: user
+        password: password
+
+    jpa:
+        database-platform: org.hibernate.dialect.PostgreSQLDialect
+        hibernate:
+            ddl-auto: validate
+        show-sql: true
+        properties:
+            hibernate:
+                format_sql: true
+
+    liquibase:
+        change-log: classpath:db/changelog/db.changelog-master.yaml
+
+server:
+    port: 8081
+
+controller:
+    base_mapping: "/api"

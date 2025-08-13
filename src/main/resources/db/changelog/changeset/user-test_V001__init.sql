@@ -17,7 +17,7 @@ CREATE TABLE  IF NOT EXISTS users (
         ON DELETE RESTRICT
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_full_name ON users (full_name);
+    CREATE INDEX IF NOT EXISTS idx_unique_full_name ON users (full_name);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_phone_number ON users (phone_number);
 
     INSERT INTO roles (role)
